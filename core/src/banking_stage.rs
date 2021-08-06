@@ -1,5 +1,5 @@
 //! The `banking_stage` processes Transaction messages. It is intended to be used
-//! to contruct a software pipeline. The stage uses all available CPU cores and
+//! to construct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
 use crate::{cost_tracker::CostTracker, packet_hasher::PacketHasher};
 use crossbeam_channel::{Receiver as CrossbeamReceiver, RecvTimeoutError};
@@ -1328,6 +1328,7 @@ impl BankingStage {
         recv_time.stop();
 
         let mms_len = mms.len();
+        // 所接收到的交易总数
         let count: usize = mms.iter().map(|x| x.packets.len()).sum();
         debug!(
             "@{:?} process start stalled for: {:?}ms txs: {} id: {}",
@@ -1344,6 +1345,7 @@ impl BankingStage {
         let mut dropped_batches_count = 0;
         let mut newly_buffered_packets_count = 0;
         while let Some(msgs) = mms_iter.next() {
+            // 对于msgs.packets中的每个packet进行编号（若packet.meta.discard为true，则其编号值为None。）
             let packet_indexes = Self::generate_packet_indexes(&msgs.packets);
             let bank_start = poh.lock().unwrap().bank_start();
             if PohRecorder::get_bank_still_processing_txs(&bank_start).is_none() {
@@ -1361,7 +1363,8 @@ impl BankingStage {
             }
             let (bank, bank_creation_time) = bank_start.unwrap();
             Self::reset_cost_tracker_if_new_bank(cost_tracker, bank.slot(), banking_stage_stats);
-
+            
+            // processed：为适合打包到本区块的交易数？？？；verified_txs_len：为？？？？邹玉娣zouyudi
             let (processed, verified_txs_len, unprocessed_indexes) =
                 Self::process_packets_transactions(
                     &bank,
@@ -1764,7 +1767,7 @@ mod tests {
 
             let packets = packets
                 .into_iter()
-                .map(|packets| (packets, vec![0u8, 1u8, 1u8]))
+                .map(|packets| (packets, vec![1u8, 0u8, 1u8]))
                 .collect();
             let packets = convert_from_old_verified(packets);
             verified_sender // no_ver, anf, tx
@@ -1808,7 +1811,7 @@ mod tests {
             }
 
             assert_eq!(bank.get_balance(&to), 1);
-            assert_eq!(bank.get_balance(&to2), 0);
+            assert_eq!(bank.get_balance(&to2), 2);
 
             drop(entry_receiver);
         }

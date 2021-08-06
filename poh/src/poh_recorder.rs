@@ -289,6 +289,7 @@ impl PohRecorder {
         let current_slot = self.tick_height / self.ticks_per_slot;
         // We've approached target_tick_height OR poh was reset to run immediately
         // Or, previous leader didn't transmit in any of its leader slots, so ignore grace ticks
+        println!("zyd test:{:?}, {:?}", self.tick_height >= target_tick_height, self.start_tick_height + self.grace_ticks == leader_first_tick_height);
         self.tick_height >= target_tick_height
             || self.start_tick_height + self.grace_ticks == leader_first_tick_height
             || (self.tick_height >= ideal_target_tick_height
@@ -519,6 +520,7 @@ impl PohRecorder {
             // sleep is not accurate enough to get a predictable time.
             // Kernel can not schedule the thread for a while.
             let started_waiting = Instant::now();
+            // 会等待，直到 target_time。
             while Instant::now() < target_time {
                 // TODO: a caller could possibly desire to reset or record while we're spinning here
                 std::hint::spin_loop();
@@ -839,6 +841,7 @@ mod tests {
             );
             poh_recorder.tick();
             poh_recorder.tick();
+            println!("zyd test:{:?}", poh_recorder.tick_cache[1].0);
             assert_eq!(poh_recorder.tick_cache.len(), 2);
             assert_eq!(poh_recorder.tick_cache[1].1, 2);
             assert_eq!(poh_recorder.tick_height, 2);
@@ -949,13 +952,15 @@ mod tests {
             // all ticks are sent after height > min
             poh_recorder.tick();
             assert_eq!(poh_recorder.tick_height, 3);
-            assert_eq!(poh_recorder.tick_cache.len(), 0);
+            // height > min 在flush_cache中即会drain
+            assert_eq!(poh_recorder.tick_cache.len(), 0); 
             let mut num_entries = 0;
             while let Ok((wbank, (_entry, _tick_height))) = entry_receiver.try_recv() {
                 assert_eq!(wbank.slot(), bank.slot());
                 num_entries += 1;
             }
             assert_eq!(num_entries, 3);
+            // 只有达到 max_tick_height 才会变为none。
             assert!(poh_recorder.working_bank.is_none());
         }
         Blockstore::destroy(&ledger_path).unwrap();
@@ -1000,12 +1005,14 @@ mod tests {
             poh_recorder.set_working_bank(working_bank);
             poh_recorder.tick();
 
+            // tick_height数对应真实的tick()次数
             assert_eq!(poh_recorder.tick_height, 5);
             assert!(poh_recorder.working_bank.is_none());
             let mut num_entries = 0;
             while entry_receiver.try_recv().is_ok() {
                 num_entries += 1;
             }
+            // 最多仅能收到 max_tick_height 个entry。
             assert_eq!(num_entries, 3);
         }
         Blockstore::destroy(&ledger_path).unwrap();
@@ -1040,8 +1047,10 @@ mod tests {
                 min_tick_height: 2,
                 max_tick_height: 3,
             };
+            println!("zyd test: {:?}", bank.slot());
             poh_recorder.set_working_bank(working_bank);
             poh_recorder.tick();
+            println!("zyd after test: {:?}", bank.slot());
             let tx = test_tx();
             let h1 = hash(b"hello world!");
             assert!(poh_recorder.record(bank.slot(), h1, vec![tx]).is_err());
@@ -1175,7 +1184,12 @@ mod tests {
             assert_eq!(poh_recorder.tick_height, 2);
             let tx = test_tx();
             let h1 = hash(b"hello world!");
-            assert!(poh_recorder.record(bank.slot(), h1, vec![tx]).is_err());
+            assert!(poh_recorder.record(bank.slot(), h1, vec![tx.clone()]).is_err());
+
+            assert_matches!(
+                poh_recorder.record(bank.slot() + 1, h1, vec![tx]),
+                Err(PohRecorderError::MaxHeightReached)
+            );
 
             let (_bank, (entry, _tick_height)) = entry_receiver.recv().unwrap();
             assert!(entry.is_tick());
@@ -1220,6 +1234,7 @@ mod tests {
             assert_eq!(poh_recorder.tick_height, 2);
             drop(entry_receiver);
             poh_recorder.tick();
+            // drop后的tick仍然会计数。
             assert!(poh_recorder.working_bank.is_none());
             assert_eq!(poh_recorder.tick_cache.len(), 3);
         }
@@ -1310,6 +1325,7 @@ mod tests {
             poh_recorder.reset(hash(b"hello"), 0, Some((4, 4))); // parent slot 0 implies tick_height of 3
             assert_eq!(poh_recorder.tick_cache.len(), 0);
             poh_recorder.tick();
+            // 注意，reset后tick_height有ticks_per_slot偏移。
             assert_eq!(poh_recorder.tick_height, DEFAULT_TICKS_PER_SLOT + 1);
         }
         Blockstore::destroy(&ledger_path).unwrap();
@@ -1374,6 +1390,8 @@ mod tests {
                 );
             poh_recorder.set_bank(&bank);
             poh_recorder.clear_bank();
+            // clear_bank时，sender会try_send(true)
+            //println!("zyd test:{:?}", receiver.recv().unwrap()); //true
             assert!(receiver.try_recv().is_ok());
         }
         Blockstore::destroy(&ledger_path).unwrap();
@@ -1426,6 +1444,7 @@ mod tests {
             let h1 = hash(b"hello world!");
             assert!(poh_recorder.record(bank.slot(), h1, vec![tx]).is_err());
             assert!(poh_recorder.working_bank.is_none());
+            // 当前已共有20ticks，每个slot配置的ticks个数为5，因此一共占据了4个slot，当前poh_recorder.start_slot为3。
             // Make sure the starting slot is updated
             assert_eq!(poh_recorder.start_slot, end_slot);
         }
